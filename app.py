@@ -75,7 +75,7 @@ WEEK_START = 5  # بداية الأسبوع: السبت (الاثنين=0 ... ا
 GRADES = ["ممتاز", "جيد جدا", "جيد", "متوسط", "يحتاج إعادة"]
 GRADES_H = GRADES + ["لم يحفظ"]  # «لم يحفظ»: لا مقدار جديد في تلك الحلقة
 HK = {"new": "حفظ جديد (مقطع جديد)", "rep": "تكرار (تجميع السورة بعد تقسيمها)", "old": "إعادة قديمة"}  # يُحتسب الجديد وحده في التقدم
-DAYS = {"sun": ("الأحد", 6), "tue": ("الثلاثاء", 1), "wed": ("الأربعاء", 2)}  # أيام الحفظ مع الشيخ أسامة (weekday: الاثنين=0)
+DAYS = {"sat": ("السبت", 5), "sun": ("الأحد", 6), "tue": ("الثلاثاء", 1), "wed": ("الأربعاء", 2)}  # أيام الحفظ مع شيخ الحفظ (weekday: الاثنين=0)
 SUN_NAMES = [] if _SC else ["بن بثرة ياسر", "مبدوعة عبد الرحيم", "ربحاوي عبد الرؤوف", "حجاب ادريس", "قبلي آدم", "راجعي وسيم",
              "أوراري يوسف", "توم ابراهيم", "الساحلي جعفر", "والي أسامة", "واعر أكرم", "بوراس آدم", "حسيد أنيس"]
 WED_NAMES = [] if _SC else ["حميدو عبد الباري", "زرور مهدي", "طمار أمين", "بوشامة عبد الرؤوف", "قبلي هيثم", "بوغطان عبد الهادي",
@@ -2366,7 +2366,7 @@ def pre_banner(me, i):
     """للشيوخ: لافتة بأبناء أبلغ أولياؤهم عن غيابهم اليوم وغدا."""
     t0 = now().date()
     ds = [(t0 + dt.timedelta(days=k)).isoformat() for k in (0, 1)]
-    S = {x["id"]: x for x in load("students") if me.get("admin") or mine(x, i)}
+    S = {x["id"]: x for x in load("students")}
     parts = []
     for d_ in ds:
         nm = sorted(S[p["sid"]]["name"] for p in load("pre") if p["date"] == d_ and p["sid"] in S)
@@ -2648,14 +2648,15 @@ def att_tab(i):
     sec("تسجيل الحضور لكل الحلقة")
     day = st.date_input("اليوم", value=now().date(), key=f"bad{i}").isoformat()
     class_warn(day)
-    vis = sorted([s for s in load("students") if me.get("admin") or mine(s, i)], key=lambda s: s["name"])
+    st.caption("يسجّل كل شيخ حضور جميع الطلبة، لا طلبته وحدهم.")
+    vis = sorted(load("students"), key=lambda s: s["name"])
     if not vis:
         st.info("لا يوجد طلبة بعد.")
         return
     wd = dt.date.fromisoformat(day).weekday()
     code = next((k for k, (_, n) in MDAYS.items() if n == wd), None)
     if code:
-        sched = (lambda x: days_of(x)) if me["t"] == "hifz" else (lambda x: mdays_of(x))
+        sched = lambda x: days_of(x) + mdays_of(x)
         due = [x for x in vis if not sched(x) or code in sched(x)]
         if len(due) < len(vis) and st.checkbox(f"عرض طلبة هذا اليوم فقط ({MDAYS[code][0]}): {len(due)} من {len(vis)}", value=True, key=f"bdue{i}_{day}"):
             vis = due
