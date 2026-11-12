@@ -1,0 +1,37 @@
+name: keep-alive
+on:
+  schedule:
+    - cron: "0 4,12,20 * * *"
+  workflow_dispatch:
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright && playwright install --with-deps chromium
+      - name: visit the app
+        env:
+          APP_URL: "https://furkan-khaled.streamlit.app"
+        run: |
+          python - <<'PY'
+          import os, re, time
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              b = p.chromium.launch()
+              pg = b.new_page()
+              pg.goto(os.environ["APP_URL"], timeout=120000)
+              time.sleep(10)
+              btn = pg.get_by_role("button", name=re.compile("get this app back up", re.I))
+              if btn.count():
+                  btn.first.click()
+                  print("app was asleep: woke it")
+                  time.sleep(60)
+              else:
+                  print("app was awake")
+                  time.sleep(20)
+              print("title:", pg.title())
+              b.close()
+          PY
