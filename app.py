@@ -100,7 +100,7 @@ HEAD = {
     "pre": ["id", "sid", "date", "why", "ts"],
     "pay": ["id", "sid", "month", "amount", "date", "teacher"],
     "sug": ["id", "ts", "sec", "who", "text", "status", "reply"],
-    "home": ["id", "sid", "date", "status", "teacher", "ts"],
+    "home": ["id", "sid", "date", "status", "teacher", "ts", "sur1", "sur2"],
 }
 
 TEACHERS = [
@@ -2545,6 +2545,13 @@ def curve_ui(sid):
 HOME_ST = {"y": "راجع ✅", "p": "راجع بعضه", "n": "لم يراجع"}
 
 
+def home_amount(h):
+    a, b = str(h.get("sur1", "") or ""), str(h.get("sur2", "") or "")
+    if not (a.isdigit() and b.isdigit() and 1 <= int(a) <= 114 and 1 <= int(b) <= 114):
+        return ""
+    return f"سورة {SURAHS[int(a) - 1][0]}" if a == b else f"من سورة {SURAHS[int(a) - 1][0]} إلى سورة {SURAHS[int(b) - 1][0]}"
+
+
 def wird_tab(i):
     me = TEACHERS[i]
     sec("ورد البيت (المراجعة في البيت)")
@@ -2559,24 +2566,44 @@ def wird_tab(i):
     keys = list(HOME_ST)
     st.caption(f"سُجّل ورد {len(cur)} من {len(students)} طالبا في هذا اليوم.")
     allp = st.checkbox("اعتبر الطلبة غير المحدَّدين راجعوا", key=f"wda{i}_{day}")
+    sopts = list(range(115))
+    sfmt = lambda k: "—" if k == 0 else f"{k}. {SURAHS[k - 1][0]}"
+
+    def _sv(c, k):
+        v = str((c or {}).get(k, "") or "")
+        return int(v) if v.isdigit() and 1 <= int(v) <= 114 else 0
+
     with st.form(f"wdf{i}_{day}"):
+        st.caption("اختر الحالة، ثم المقدار «من سورة كذا إلى سورة كذا» لمن راجع (إن كان في سورة واحدة فاختر الأولى فقط).")
         picks = {}
         for x in students:
             c = cur.get(x["id"])
-            picks[x["id"]] = st.radio(x["name"], keys, format_func=HOME_ST.get, horizontal=True,
-                                       index=keys.index(c["status"]) if c and c["status"] in keys else None, key=f"wdr{i}_{day}_{x['id']}")
+            st.markdown(f"**{esc(x['name'])}**")
+            r_ = st.radio("الحالة", keys, format_func=HOME_ST.get, horizontal=True, label_visibility="collapsed",
+                          index=keys.index(c["status"]) if c and c["status"] in keys else None, key=f"wdr{i}_{day}_{x['id']}")
+            c1, c2 = st.columns(2)
+            a_ = c1.selectbox("من سورة", sopts, format_func=sfmt, index=_sv(c, "sur1"), key=f"wds1_{i}_{day}_{x['id']}")
+            b_ = c2.selectbox("إلى سورة", sopts, format_func=sfmt, index=_sv(c, "sur2"), key=f"wds2_{i}_{day}_{x['id']}")
+            picks[x["id"]] = (r_, a_, b_)
         if st.form_submit_button("حفظ ورد البيت", type="primary"):
             add, upd = [], {}
-            for sid, val in picks.items():
+            for sid, (val, a_, b_) in picks.items():
                 val = val or ("y" if allp else None)
                 if not val:
                     continue
+                if val == "n":
+                    a_ = b_ = 0
+                if a_ and not b_:
+                    b_ = a_
+                if b_ and not a_:
+                    a_ = b_
+                f1, f2 = (str(a_) if a_ else ""), (str(b_) if b_ else "")
                 c = cur.get(sid)
                 if c:
-                    if c["status"] != val:
-                        upd[c["id"]] = {"status": val, "teacher": me["n"], "ts": stamp()}
+                    if c["status"] != val or str(c.get("sur1", "")) != f1 or str(c.get("sur2", "")) != f2:
+                        upd[c["id"]] = {"status": val, "teacher": me["n"], "ts": stamp(), "sur1": f1, "sur2": f2}
                 else:
-                    add.append({"sid": sid, "date": day, "status": val, "teacher": me["n"], "ts": stamp()})
+                    add.append({"sid": sid, "date": day, "status": val, "teacher": me["n"], "ts": stamp(), "sur1": f1, "sur2": f2})
             if add:
                 write(STORE.add_many, "home", add)
             if upd:
@@ -2596,6 +2623,12 @@ def wird_tab(i):
             slack.append(x["name"])
     if slack:
         st.markdown('<div class="note">🔔 لم يراجعوا ورد البيت في آخر 3 أيام مسجَّلة: ' + "، ".join(esc(n) for n in slack) + "</div>", unsafe_allow_html=True)
+    with st.expander(f"ما سُجّل في {day}"):
+        done_ = [(x, cur[x["id"]]) for x in students if x["id"] in cur]
+        if not done_:
+            st.caption("لا تسجيل في هذا اليوم.")
+        for x, h in done_:
+            st.markdown(f"**{esc(x['name'])}**: {HOME_ST.get(h['status'], '')}" + (f" — {esc(home_amount(h))}" if home_amount(h) else ""))
     with st.expander(f"ملخص شهر {day[:7]}"):
         mo = [h for h in home if h["date"][:7] == day[:7]]
         for x in students:
@@ -2604,7 +2637,8 @@ def wird_tab(i):
                 st.markdown(f"**{esc(x['name'])}**: لا تسجيل")
                 continue
             ny, npz, nn = (sum(h["status"] == k for h in r) for k in ("y", "p", "n"))
-            st.markdown(f"**{esc(x['name'])}**: راجع {ny} · بعضه {npz} · لم يراجع {nn} من {len(r)} يوما مسجَّلا ({round(100 * (ny + 0.5 * npz) / len(r))}%)")
+            _la = next((home_amount(h) for h in sorted(r, key=lambda h: h["date"], reverse=True) if home_amount(h)), "")
+            st.markdown(f"**{esc(x['name'])}**: راجع {ny} · بعضه {npz} · لم يراجع {nn} من {len(r)} يوما مسجَّلا ({round(100 * (ny + 0.5 * npz) / len(r))}%)" + (f" · آخر مقدار: {esc(_la)}" if _la else ""))
 
 
 def halaqa_tab(i):
