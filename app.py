@@ -60,6 +60,7 @@ REV1_N = _SC.get("sheikh1", "الشيخ هارون")
 REV2_N = _SC.get("sheikh2", "الشيخ حذيفة")
 U0, U1, U2 = _SC.get("user0", "osama"), _SC.get("user1", "haroun"), _SC.get("user2", "houdhayfa")
 SEEDED = (str(_SC.get("seeded", "")).strip() in ("1", "true", "yes")) if MULTI else not _SC  # قوائم الأسماء الأولية خاصة بالقسم الابتدائي
+WIRD = str(_SC.get("wird", "")).strip() in ("1", "true", "yes")  # تبويب «ورد البيت» (يُفعَّل لقسم بسطر wird في Secrets)
 SOLO = str(_SC.get("solo", "")).strip() in ("1", "true", "yes")  # شيخ واحد يجمع الحفظ والمراجعة (لا شيوخ مراجعة آخرون)
 if SOLO:
     U1 = U2 = U0
@@ -99,6 +100,7 @@ HEAD = {
     "pre": ["id", "sid", "date", "why", "ts"],
     "pay": ["id", "sid", "month", "amount", "date", "teacher"],
     "sug": ["id", "ts", "sec", "who", "text", "status", "reply"],
+    "home": ["id", "sid", "date", "status", "teacher", "ts"],
 }
 
 TEACHERS = [
@@ -2540,6 +2542,71 @@ def curve_ui(sid):
     st.caption("النقاط من 100: الانضباط والحضور والمراجعة والحفظ. الأسابيع من الأقدم (يسارا) إلى الأحدث (يمينا)، ويُضاف الأسبوع بعد انتهائه يوم الجمعة. الأسبوع الخالي من الحلقات لا يظهر.")
 
 
+HOME_ST = {"y": "راجع ✅", "p": "راجع بعضه", "n": "لم يراجع"}
+
+
+def wird_tab(i):
+    me = TEACHERS[i]
+    sec("ورد البيت (المراجعة في البيت)")
+    st.caption("سجّل هل راجع الطالب ورده في بيته في ذلك اليوم. اليوم هنا أي يوم في الأسبوع، سواء كانت حلقة أم لا. يسجّل كل شيخ لكل الطلبة.")
+    day = st.date_input("اليوم", value=now().date(), max_value=now().date(), key=f"wd{i}").isoformat()
+    students = sorted(load("students"), key=lambda x: x["name"])
+    if not students:
+        st.info("لا يوجد طلبة بعد.")
+        return
+    home = load("home")
+    cur = {h["sid"]: h for h in home if h["date"] == day}
+    keys = list(HOME_ST)
+    st.caption(f"سُجّل ورد {len(cur)} من {len(students)} طالبا في هذا اليوم.")
+    allp = st.checkbox("اعتبر الطلبة غير المحدَّدين راجعوا", key=f"wda{i}_{day}")
+    with st.form(f"wdf{i}_{day}"):
+        picks = {}
+        for x in students:
+            c = cur.get(x["id"])
+            picks[x["id"]] = st.radio(x["name"], keys, format_func=HOME_ST.get, horizontal=True,
+                                       index=keys.index(c["status"]) if c and c["status"] in keys else None, key=f"wdr{i}_{day}_{x['id']}")
+        if st.form_submit_button("حفظ ورد البيت", type="primary"):
+            add, upd = [], {}
+            for sid, val in picks.items():
+                val = val or ("y" if allp else None)
+                if not val:
+                    continue
+                c = cur.get(sid)
+                if c:
+                    if c["status"] != val:
+                        upd[c["id"]] = {"status": val, "teacher": me["n"], "ts": stamp()}
+                else:
+                    add.append({"sid": sid, "date": day, "status": val, "teacher": me["n"], "ts": stamp()})
+            if add:
+                write(STORE.add_many, "home", add)
+            if upd:
+                write(STORE.update_many, "home", upd)
+            if add or upd:
+                audit("ورد البيت", f"{day}: {len(add)} جديد، {len(upd)} معدَّل")
+            st.toast(f"✓ تم الحفظ ({len(add)} جديد، {len(upd)} معدَّل)")
+            st.rerun()
+    by_s = {}
+    for h in home:
+        if h["date"] <= day:
+            by_s.setdefault(h["sid"], []).append(h)
+    slack = []
+    for x in students:
+        last3 = sorted(by_s.get(x["id"], []), key=lambda h: h["date"], reverse=True)[:3]
+        if len(last3) == 3 and all(h["status"] == "n" for h in last3):
+            slack.append(x["name"])
+    if slack:
+        st.markdown('<div class="note">🔔 لم يراجعوا ورد البيت في آخر 3 أيام مسجَّلة: ' + "، ".join(esc(n) for n in slack) + "</div>", unsafe_allow_html=True)
+    with st.expander(f"ملخص شهر {day[:7]}"):
+        mo = [h for h in home if h["date"][:7] == day[:7]]
+        for x in students:
+            r = [h for h in mo if h["sid"] == x["id"]]
+            if not r:
+                st.markdown(f"**{esc(x['name'])}**: لا تسجيل")
+                continue
+            ny, npz, nn = (sum(h["status"] == k for h in r) for k in ("y", "p", "n"))
+            st.markdown(f"**{esc(x['name'])}**: راجع {ny} · بعضه {npz} · لم يراجع {nn} من {len(r)} يوما مسجَّلا ({round(100 * (ny + 0.5 * npz) / len(r))}%)")
+
+
 def halaqa_tab(i):
     me = TEACHERS[i]
     is_h = me["t"] == "hifz"
@@ -4731,9 +4798,9 @@ def staff_view(i):
     cn, ca = chat_unread(i)
     if cn:
         st.markdown(f'<div class="note">{"🔔 " if ca else ""}لديك {cn} رسالة جديدة من المشايخ' + (f" (منها {ca} تنبيه عاجل)" if ca else "") + '. افتح تبويب «المشايخ».</div>', unsafe_allow_html=True)
-    names = ["حلقة اليوم", "التقرير", "التسجيل", "الحضور", "الانضباط", "الرسائل"] + ([] if SOLO else [f"المشايخ ({cn})" if cn else "المشايخ"]) + ["اقتراحات"] + (["ملخص الحلقة", "الإدارة"] if me.get("admin") else [])
+    names = ["حلقة اليوم"] + (["ورد البيت"] if WIRD else []) + ["التقرير", "التسجيل", "الحضور", "الانضباط", "الرسائل"] + ([] if SOLO else [f"المشايخ ({cn})" if cn else "المشايخ"]) + ["اقتراحات"] + (["ملخص الحلقة", "الإدارة"] if me.get("admin") else [])
     flash_show()
-    fns = [lambda: halaqa_tab(i), lambda: report_tab(i), lambda: student_tab(i), lambda: att_tab(i), lambda: disc_tab(i), lambda: msgs_tab(i)] + ([] if SOLO else [lambda: chat_tab(i)]) + [lambda: sug_tab(i)]
+    fns = [lambda: halaqa_tab(i)] + ([lambda: wird_tab(i)] if WIRD else []) + [lambda: report_tab(i), lambda: student_tab(i), lambda: att_tab(i), lambda: disc_tab(i), lambda: msgs_tab(i)] + ([] if SOLO else [lambda: chat_tab(i)]) + [lambda: sug_tab(i)]
     if me.get("admin"):
         fns += [summary_tab, admin_tab]
     idx = list(range(len(names)))
