@@ -1,5 +1,6 @@
 # جمعية الفرقان لتعليم القرآن – القسم الابتدائي | متابعة الطلبة (Streamlit)
 import csv
+import json
 import hashlib
 import calendar
 import io
@@ -61,6 +62,7 @@ REV2_N = _SC.get("sheikh2", "الشيخ حذيفة")
 U0, U1, U2 = _SC.get("user0", "osama"), _SC.get("user1", "haroun"), _SC.get("user2", "houdhayfa")
 SEEDED = (str(_SC.get("seeded", "")).strip() in ("1", "true", "yes")) if MULTI else not _SC  # قوائم الأسماء الأولية خاصة بالقسم الابتدائي
 WIRD = str(_SC.get("wird", "")).strip() in ("1", "true", "yes")  # تبويب «ورد البيت» (يُفعَّل لقسم بسطر wird في Secrets)
+EXAM_X = SEEDED or str(_SC.get("exam_cross", "")).strip() in ("1", "true", "yes")  # امتحان متبادل: كل شيخ مراجعة يمتحن طلبة الآخر
 SOLO = str(_SC.get("solo", "")).strip() in ("1", "true", "yes")  # شيخ واحد يجمع الحفظ والمراجعة (لا شيوخ مراجعة آخرون)
 if SOLO:
     U1 = U2 = U0
@@ -68,11 +70,12 @@ if SOLO:
 
 def app_link():
     """رابط صفحة الأولياء (في الأقسام المتعددة يحمل مفتاح القسم)."""
+    own = str(_SC.get("app_url", "")).strip() if MULTI else ""  # عنوان خاص بالقسم يُبقي رابط أوليائه القديم كما هو
     try:
-        base = str(st.secrets["app_url"]).rstrip("/")
+        base = (own or str(st.secrets["app_url"])).rstrip("/")
     except Exception:
         base = ""
-    return base + "/?v=p" + (f"&s={SECKEY}" if MULTI else "")
+    return base + "/?v=p" + (f"&s={SECKEY}" if MULTI and not own else "")
 
 
 def short_n(n):
@@ -101,6 +104,7 @@ HEAD = {
     "pay": ["id", "sid", "month", "amount", "date", "teacher"],
     "sug": ["id", "ts", "sec", "who", "text", "status", "reply"],
     "home": ["id", "sid", "date", "status", "teacher", "ts", "sur1", "sur2"],
+    "xam": ["id", "sid", "date", "teacher", "s1", "a1", "s2", "a2", "items", "avg", "note"],
 }
 
 TEACHERS = [
@@ -1284,7 +1288,8 @@ def _badges(sid, month, v, rk, rP, rP2, logs, ch=None):
 
 
 def month_bundle(month):
-    students, logs, att, disc, exams = (load(n) for n in ("students", "logs", "att", "disc", "exams"))
+    students, logs, att, disc = (load(n) for n in ("students", "logs", "att", "disc"))
+    exams = load_exams()
     S = month_stats(month, students, logs, att, disc, exams)
     rank = _ranks(S)
     pm = prev_month(month)
@@ -1418,12 +1423,23 @@ EXAM_KINDS = ["اختبار حزب", "اختبار شهري", "اختبار آخ
 
 
 def exams_html(sid):
-    E = sorted([e for e in load("exams") if e["sid"] == sid], key=lambda e: e["date"], reverse=True)
+    E = sorted([e for e in load_exams() if e["sid"] == sid], key=lambda e: e["date"], reverse=True)
     if not E:
         return '<div class="empty">لا توجد اختبارات مسجَّلة بعد.</div>'
     out = []
     for e in E[:15]:
         sc = num(e["score"])
+        x = e.get("_x")
+        if x:  # امتحان الحفظ: المعدل من 10 وتقدير كل موضع
+            av = num(x.get("avg"))
+            mw = "".join(f'<div class="meta"><span>سورة {SURAHS[int(a_) - 1][0]} من الآية {b_} إلى {c_}</span><span>{esc(g_)}</span><span>{float(t_):g}/10</span></div>'
+                         for a_, b_, c_, g_, t_ in xam_items(x))
+            out.append(f'<div class="ent"><i class="med"></i><div class="bd2"><div class="txt">امتحان الحفظ</div>'
+                       f'<div class="meta"><span>{esc(e["date"])}</span><span>{esc(e["teacher"])}</span></div>'
+                       f'<div class="meta"><span>{esc(xam_range(x))}</span></div>{mw}'
+                       + (f'<div class="meta"><span>{esc(x["note"])}</span></div>' if x.get("note") else "")
+                       + f'</div><span class="gr {"g1" if av >= 8 else "g3" if av >= 5 else "g5"}">{av:g} / 10</span></div>')
+            continue
         title_ = e["kind"] + (f" — الحزب {e['part']}" if e["kind"] == "اختبار حزب" and e["part"] else "")
         out.append(f'<div class="ent"><i class="med"></i><div class="bd2"><div class="txt">{esc(title_)}</div>'
                    f'<div class="meta"><span>{esc(e["date"])}</span><span>{esc(e["teacher"])}</span>' + (f'<span>{esc(e["note"])}</span>' if e["note"] else "") +
@@ -1688,11 +1704,11 @@ def student_pdf(stu, month, bundle):
     need(20)
     put(R, st_["y"], f"عدد حصص المراجعة: {len(v['ml'])}" + (f"      التقييم العام للمراجعة: {grade_name(v['mur'])}" if v["mur"] else ""), 12, "r", INK)
 
-    _ex = sorted([e for e in load("exams") if e["sid"] == stu["id"] and e["date"][:7] == month], key=lambda e: e["date"])
+    _ex = sorted([e for e in load_exams() if e["sid"] == stu["id"] and e["date"][:7] == month], key=lambda e: e["date"])
     if _ex:
         title("الاختبارات")
         table([("التاريخ", 78), ("الاختبار", None), ("العلامة", 80)],
-              [(e["date"], e["kind"] + (f" — الحزب {e['part']}" if e["kind"] == "اختبار حزب" and e["part"] else "") + (f"  ({e['note']})" if e["note"] else ""), f"{num(e['score']):g} / 20") for e in _ex], "")
+              [(e["date"], e["kind"] + (f" — الحزب {e['part']}" if e["kind"] == "اختبار حزب" and e["part"] else "") + (f"  ({e['note']})" if e["note"] else ""), (f"{num(e['_x'].get('avg')):g} / 10" if e.get("_x") else f"{num(e['score']):g} / 20")) for e in _ex], "")
     need(120)
     st_["y"] -= 34
     c.setFillColor(HexColor("#fbf6e6"))
@@ -2140,7 +2156,8 @@ def last_week_range(day=None):
 def week_winner(day=None, sk=""):
     """طالب الأسبوع: الأكثر تحسنا عن معدّله هو (متوسط أسابيعه الثلاثة السابقة)، لا الأعلى نقاطا."""
     lo, hi = last_week_range(day)
-    students, logs, att, disc, exams = (load(n) for n in ("students", "logs", "att", "disc", "exams"))
+    students, logs, att, disc = (load(n) for n in ("students", "logs", "att", "disc"))
+    exams = load_exams()
     W = month_stats((lo, hi), students, logs, att, disc, exams)
     d_lo, d_hi = dt.date.fromisoformat(lo), dt.date.fromisoformat(hi)
     PW = [month_stats(((d_lo - dt.timedelta(days=7 * k)).isoformat(), (d_hi - dt.timedelta(days=7 * k)).isoformat()), students, logs, att, disc, exams) for k in (1, 2, 3)]
@@ -2470,7 +2487,8 @@ CURVE_WEEKS = 8
 def weekly_curve(n=CURVE_WEEKS, day=None, sk=""):
     """نقاط كل طالب (من 100) في آخر n أسبوعا منتهيا (سبت–جمعة): {معرّف: [{lo, score|None}]}."""
     lo0, hi0 = last_week_range(day)
-    students, logs, att, disc, exams = (load(k) for k in ("students", "logs", "att", "disc", "exams"))
+    students, logs, att, disc = (load(k) for k in ("students", "logs", "att", "disc"))
+    exams = load_exams()
     d_lo, d_hi = dt.date.fromisoformat(lo0), dt.date.fromisoformat(hi0)
     out = {x["id"]: [] for x in students}
     for k in range(n - 1, -1, -1):
@@ -2639,6 +2657,135 @@ def wird_tab(i):
             ny, npz, nn = (sum(h["status"] == k for h in r) for k in ("y", "p", "n"))
             _la = next((home_amount(h) for h in sorted(r, key=lambda h: h["date"], reverse=True) if home_amount(h)), "")
             st.markdown(f"**{esc(x['name'])}**: راجع {ny} · بعضه {npz} · لم يراجع {nn} من {len(r)} يوما مسجَّلا ({round(100 * (ny + 0.5 * npz) / len(r))}%)" + (f" · آخر مقدار: {esc(_la)}" if _la else ""))
+
+
+XAM_GR = {
+    "ممتاز": ("لا خطأ واسترسال ممتاز", 10.0),
+    "جيد": ("استرسال ممتاز مع بعض الهفوات أو التنبيهات", 8.5),
+    "حسن": ("استرسال مع تنبيهات وأخطاء غير جوهرية، أو نسي آية حتى آيتين", 7.0),
+    "متوسط": ("وجود أخطاء جوهرية", 5.5),
+    "ضعيف": ("أخطاء جوهرية واسترسال ضعيف", 3.5),
+    "لا يستطيع القراءة": ("", 0.0),
+}
+
+
+def xam_items(r):
+    try:
+        return [list(x) for x in json.loads(r.get("items") or "[]")]
+    except Exception:
+        return []
+
+
+def xam_range(r):
+    def pos(sn, a):
+        sn = int(sn or 0)
+        return f"سورة {SURAHS[sn - 1][0]} الآية {a}" if 1 <= sn <= 114 else "—"
+    return f"من {pos(r.get('s1'), r.get('a1'))} إلى {pos(r.get('s2'), r.get('a2'))}"
+
+
+def xam_as_exam(r):
+    """امتحان الحفظ بصيغة «الاختبار» (العلامة من 20 = المعدل ×2) ليدخل في نفس نظام الترتيب."""
+    try:
+        sc = float(r.get("avg") or 0) * 2
+    except ValueError:
+        sc = 0.0
+    return {"id": r["id"], "sid": r["sid"], "date": r["date"], "kind": "امتحان الحفظ", "part": "", "score": f"{sc:g}",
+            "note": xam_range(r), "teacher": r["teacher"], "_x": r}
+
+
+def load_exams():
+    """الاختبارات المعتادة + امتحانات الحفظ المتبادلة (وكلاهما يدخل في الترتيب إن فُعِّل اعتماد الاختبارات)."""
+    return load("exams") + [xam_as_exam(r) for r in load("xam")]
+
+
+def xam_tab(i):
+    me = TEACHERS[i]
+    admin = me.get("admin")
+    sec("الامتحان")
+    students = sorted(load("students"), key=lambda x: x["name"])
+    pool = students if admin else [x for x in students if x["grp"] in ("1", "2") and x["grp"] != str(i)]
+    other = REV_SHEIKH.get("2" if i == 1 else "1", "")
+    st.caption("تمتحن كل طلبة القسم." if admin else f"تمتحن طلبة {other}.")
+    if not pool:
+        st.info("لا يوجد طلبة لتمتحنهم بعد (يُعيَّن كل طالب لشيخ مراجعة من تبويب «الإدارة»).")
+        return
+    by = {x["id"]: x for x in pool}
+    ver = st.session_state.get("xam_ver", 0)
+    sid = st.selectbox("الطالب", list(by), format_func=lambda k: by[k]["name"], key=f"xs{ver}")
+    kk = f"x{ver}_{sid}"
+    sfmt = lambda k: f"{k}. {SURAHS[k - 1][0]}"
+    my_logs = [l for l in load("logs") if l["sid"] == sid]
+    last = next(iter(by_date([l for l in my_logs if l["type"] == "hifz" and aya_set(l)])), None)
+    d_to = (int(last["sur"]), int(last["a2"])) if last else (114, 6)
+
+    def _clamp(key, hi, lo=1):
+        v = st.session_state.get(key)
+        if v is not None and not (lo <= v <= hi):
+            st.session_state[key] = max(lo, min(hi, v))
+
+    day = st.date_input("تاريخ الامتحان", value=now().date(), max_value=now().date(), key=f"{kk}_d").isoformat()
+    st.markdown("**مقدار الحفظ الذي يُمتحن فيه الطالب**")
+    c1, c2, c3, c4 = st.columns([3, 1, 3, 1])
+    s1 = c1.selectbox("من سورة", range(1, 115), format_func=sfmt, index=113, key=f"{kk}_s1")
+    _clamp(f"{kk}_a1", SURAHS[s1 - 1][1])
+    a1 = c2.number_input("آية", 1, SURAHS[s1 - 1][1], 1, key=f"{kk}_a1")
+    s2 = c3.selectbox("إلى سورة", range(1, 115), format_func=sfmt, index=d_to[0] - 1, key=f"{kk}_s2")
+    _clamp(f"{kk}_a2", SURAHS[s2 - 1][1])
+    a2 = c4.number_input("آية ", 1, SURAHS[s2 - 1][1], min(d_to[1], SURAHS[s2 - 1][1]) if s2 == d_to[0] else SURAHS[s2 - 1][1], key=f"{kk}_a2")
+    with st.expander("معاني التقديرات"):
+        st.markdown("\n".join(f"- **{g}**" + (f": {d}" if d else "") + f" (تنقيط مقترح {sc:g})" for g, (d, sc) in XAM_GR.items()))
+    n = int(st.number_input("عدد المواضع", 1, 40, 3, key=f"{kk}_n"))
+
+    def _sync(j):
+        st.session_state[f"{kk}_msc{j}"] = XAM_GR[st.session_state[f"{kk}_mg{j}"]][1]
+
+    rows = []
+    for j in range(n):
+        with st.container(border=True):
+            st.markdown(f"**الموضع {j + 1}**")
+            m1, m2, m3 = st.columns([3, 1, 1])
+            sn = m1.selectbox("السورة", range(1, 115), format_func=sfmt, index=d_to[0] - 1, key=f"{kk}_ms{j}")
+            L = SURAHS[sn - 1][1]
+            _clamp(f"{kk}_ma{j}", L)
+            _clamp(f"{kk}_mb{j}", L)
+            ma = m2.number_input("من آية", 1, L, 1, key=f"{kk}_ma{j}")
+            mb = m3.number_input("إلى آية", 1, L, min(L, 5), key=f"{kk}_mb{j}")
+            g1, g2 = st.columns([2, 1])
+            if f"{kk}_msc{j}" not in st.session_state:
+                st.session_state[f"{kk}_msc{j}"] = XAM_GR["ممتاز"][1]
+            g = g1.selectbox("التقدير", list(XAM_GR), key=f"{kk}_mg{j}", on_change=_sync, args=(j,))
+            sc = g2.number_input("التنقيط من 10", 0.0, 10.0, step=0.25, key=f"{kk}_msc{j}")
+            rows.append([sn, int(ma), int(mb), g, float(sc)])
+    avg = round(sum(r[4] for r in rows) / len(rows), 2)
+    st.markdown(f'<div class="pay {"ok" if avg >= 7 else "no"}">معدل الامتحان: <b>{avg:g} / 10</b></div>', unsafe_allow_html=True)
+    note = st.text_input("ملاحظة (اختياري)", key=f"{kk}_note", max_chars=200)
+    if st.button("حفظ الامتحان", type="primary", key=f"{kk}_save"):
+        bad = [j + 1 for j, r in enumerate(rows) if r[1] > r[2]]
+        if bad:
+            st.error("في المواضع: " + "، ".join(map(str, bad)) + " آية البداية أكبر من آية النهاية.")
+        else:
+            write(STORE.add, "xam", {"sid": sid, "date": day, "teacher": me["n"], "s1": str(s1), "a1": str(int(a1)), "s2": str(s2), "a2": str(int(a2)),
+                                      "items": json.dumps(rows, ensure_ascii=False), "avg": f"{avg:g}", "note": note.strip()})
+            audit("امتحان", f"{by[sid]['name']}: {avg:g}/10")
+            st.session_state["xam_ver"] = ver + 1
+            st.toast(f"✓ حُفظ الامتحان، المعدل {avg:g}/10")
+            st.rerun()
+    sec("الامتحانات المسجّلة")
+    ids = {x["id"] for x in pool}
+    allx = sorted([r for r in load("xam") if r["sid"] in ids or r["teacher"] == me["n"]], key=lambda r: (r["date"], r["id"]), reverse=True)
+    names = {x["id"]: x["name"] for x in students}
+    if not allx:
+        st.caption("لا امتحانات بعد.")
+    for r in allx[:40]:
+        with st.expander(f"{names.get(r['sid'], '؟')} · {r['date']} · {r.get('avg', '')}/10"):
+            st.markdown(f"الممتحِن: {esc(r['teacher'])} · المقدار: {esc(xam_range(r))}")
+            for sn, a_, b_, g_, sc_ in xam_items(r):
+                st.markdown(f"- سورة {SURAHS[int(sn) - 1][0]} من الآية {a_} إلى الآية {b_} — **{esc(g_)}** — {float(sc_):g}/10")
+            if r.get("note"):
+                st.markdown(f'<div class="note">{esc(r["note"])}</div>', unsafe_allow_html=True)
+            if (admin or r["teacher"] == me["n"]) and st.button("حذف الامتحان", key=f"xd{r['id']}"):
+                write(STORE.delete, "xam", r["id"])
+                st.rerun()
 
 
 def halaqa_tab(i):
@@ -3372,10 +3519,36 @@ def find_pin(text, students):
     return None
 
 
+def _pin_section(p):
+    """الأقسام المتعددة: القسم الذي فيه رمز هذا الولي (يُبحث في بقية الأقسام)، حتى يعمل أي رابط ولي دون مفتاح قسم."""
+    if not str(p or "").strip():
+        return None
+    for key, cfg in SECS.items():
+        if key == SECKEY:
+            continue
+        try:
+            if str(cfg.get("sheet_url") or "").strip():
+                import json as _j
+
+                sa = {k_: str(v_) for k_, v_ in dict(st.secrets["gcp_service_account"]).items()}
+                stt = _sheets_store(str(cfg["sheet_url"]), _j.dumps(sa))
+            else:
+                stt = _local_for(key)
+            if find_pin(p, stt.list("students")):
+                return key
+        except Exception:
+            continue
+    return None
+
+
+def _local_for(key):
+    return LocalStore(os.path.join(HERE, "data", key))
+
+
 def parent_view():
     header("متابعة الطالب", basmala=True)
     pin = st.session_state.get("ppin")
-    k = st.query_params.get("k")
+    k = st.query_params.get("k") or st.session_state.pop("_pin_pending", None)
     if not pin and k:
         # الرابط الذي يحمل الرمز يفتح صفحة الابن مباشرة دون لصق
         try:
@@ -3387,6 +3560,12 @@ def parent_view():
             if fp:
                 st.session_state.ppin = fp
                 st.rerun()
+            elif MULTI and not st.query_params.get("s"):
+                sk2 = _pin_section(k)
+                if sk2:
+                    st.session_state["_pin_pending"] = k
+                    st.query_params["s"] = sk2
+                    st.rerun()
             note_fail()
     if not pin:
         sec("دخول ولي الأمر")
@@ -3399,6 +3578,10 @@ def parent_view():
                 st.error("محاولات كثيرة. انتظر دقائق ثم أعد المحاولة.")
             elif find_pin(p, load("students")):
                 st.session_state.ppin = find_pin(p, load("students"))
+                st.rerun()
+            elif MULTI and not st.query_params.get("s") and _pin_section(p):
+                st.session_state["_pin_pending"] = p
+                st.query_params["s"] = _pin_section(p)
                 st.rerun()
             else:
                 note_fail()
@@ -4832,9 +5015,10 @@ def staff_view(i):
     cn, ca = chat_unread(i)
     if cn:
         st.markdown(f'<div class="note">{"🔔 " if ca else ""}لديك {cn} رسالة جديدة من المشايخ' + (f" (منها {ca} تنبيه عاجل)" if ca else "") + '. افتح تبويب «المشايخ».</div>', unsafe_allow_html=True)
-    names = ["حلقة اليوم"] + (["ورد البيت"] if WIRD else []) + ["التقرير", "التسجيل", "الحضور", "الانضباط", "الرسائل"] + ([] if SOLO else [f"المشايخ ({cn})" if cn else "المشايخ"]) + ["اقتراحات"] + (["ملخص الحلقة", "الإدارة"] if me.get("admin") else [])
+    show_x = EXAM_X and not SOLO and (me["t"] == "mur" or bool(me.get("admin")))
+    names = ["حلقة اليوم"] + (["ورد البيت"] if WIRD else []) + ["التقرير", "التسجيل"] + (["الامتحان"] if show_x else []) + ["الحضور", "الانضباط", "الرسائل"] + ([] if SOLO else [f"المشايخ ({cn})" if cn else "المشايخ"]) + ["اقتراحات"] + (["ملخص الحلقة", "الإدارة"] if me.get("admin") else [])
     flash_show()
-    fns = [lambda: halaqa_tab(i)] + ([lambda: wird_tab(i)] if WIRD else []) + [lambda: report_tab(i), lambda: student_tab(i), lambda: att_tab(i), lambda: disc_tab(i), lambda: msgs_tab(i)] + ([] if SOLO else [lambda: chat_tab(i)]) + [lambda: sug_tab(i)]
+    fns = [lambda: halaqa_tab(i)] + ([lambda: wird_tab(i)] if WIRD else []) + [lambda: report_tab(i), lambda: student_tab(i)] + ([lambda: xam_tab(i)] if show_x else []) + [lambda: att_tab(i), lambda: disc_tab(i), lambda: msgs_tab(i)] + ([] if SOLO else [lambda: chat_tab(i)]) + [lambda: sug_tab(i)]
     if me.get("admin"):
         fns += [summary_tab, admin_tab]
     idx = list(range(len(names)))
